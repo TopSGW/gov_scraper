@@ -237,11 +237,33 @@ class GovInfoScraper:
                     all_results.extend(results)
         return all_results
 
+def get_user_input():
+    """Get start and end numbers from user input"""
+    while True:
+        try:
+            start = int(input("Enter start number (1-9999): "))
+            if 1 <= start <= 9999:
+                break
+            print("Start number must be between 1 and 9999")
+        except ValueError:
+            print("Please enter a valid number")
+    
+    while True:
+        try:
+            end = int(input("Enter end number (must be >= start number): "))
+            if end >= start and end <= 9999:
+                break
+            print("End number must be between start number and 9999")
+        except ValueError:
+            print("Please enter a valid number")
+    
+    return start, end
+
 def main():
     parser = argparse.ArgumentParser(description='Download and extract data from congressional bills')
     parser.add_argument('--congress', default="118", help='Congress number (default: 118)')
-    parser.add_argument('--start', type=int, default=1, help='Start number for bill range')
-    parser.add_argument('--end', type=int, default=100, help='End number for bill range')
+    parser.add_argument('--start', type=int, help='Start number for bill range')
+    parser.add_argument('--end', type=int, help='End number for bill range')
     parser.add_argument('--force', action='store_true', help='Force download even if files exist')
     parser.add_argument('--urls', nargs='+', help='List of direct URLs to download')
     args = parser.parse_args()
@@ -252,13 +274,21 @@ def main():
         print(f"\nStarting to download {len(args.urls)} bills from direct URLs...")
         results = scraper.download_bills_from_urls(args.urls, skip_existing=not args.force)
     else:
+        # If start or end not provided, get them from user input
+        start_number = args.start
+        end_number = args.end
+        
+        if start_number is None or end_number is None:
+            print("\nNo start/end numbers provided via command line. Please enter them now:")
+            start_number, end_number = get_user_input()
+        
         print(f"\nStarting batch download for {args.congress}th Congress...")
-        print(f"Bill range: {args.start}-{args.end}")
+        print(f"Bill range: {start_number}-{end_number}")
         print(f"Force download: {args.force}")
         results = scraper.batch_download_bills(
             congress=args.congress,
-            start_number=args.start,
-            end_number=args.end
+            start_number=start_number,
+            end_number=end_number
         )
     
     if results:
