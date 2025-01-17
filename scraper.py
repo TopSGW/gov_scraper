@@ -224,21 +224,30 @@ class GovInfoScraper:
         
         return results if success else None
 
-    def batch_download_bills(self, congress: str, start_number: int = 1, end_number: int = 100):
-        """Download bills in batch for all types"""
-        all_results = []
-        for bill_type in self.bill_types:
-            print(f"\nProcessing {bill_type} bills for {congress}th Congress ({start_number}-{end_number})")
-            urls = self.generate_bill_urls(congress, bill_type, start_number, end_number)
-            print(f"Found {len(urls)} valid bills to download")
-            if urls:
-                results = self.download_bills_from_urls(urls)
-                if results:
-                    all_results.extend(results)
-        return all_results
+    def batch_download_bills(self, congress: str, bill_type: str, start_number: int = 1, end_number: int = 100):
+        """Download bills in batch for specific bill type"""
+        print(f"\nProcessing {bill_type} bills for {congress}th Congress ({start_number}-{end_number})")
+        urls = self.generate_bill_urls(congress, bill_type, start_number, end_number)
+        print(f"Found {len(urls)} valid bills to download")
+        if urls:
+            return self.download_bills_from_urls(urls)
+        return []
 
-def get_user_input():
-    """Get start and end numbers from user input"""
+def get_user_input(scraper):
+    """Get bill type, start and end numbers from user input"""
+    print("\nAvailable bill types:")
+    for i, bill_type in enumerate(scraper.bill_types, 1):
+        print(f"{i}. {bill_type}")
+    
+    while True:
+        try:
+            bill_type = input("\nEnter bill type (e.g., hconres, hr, s): ").lower()
+            if bill_type in scraper.bill_types:
+                break
+            print("Invalid bill type. Please choose from the list above.")
+        except ValueError:
+            print("Please enter a valid bill type")
+    
     while True:
         try:
             start = int(input("Enter start number (1-9999): "))
@@ -257,11 +266,12 @@ def get_user_input():
         except ValueError:
             print("Please enter a valid number")
     
-    return start, end
+    return bill_type, start, end
 
 def main():
     parser = argparse.ArgumentParser(description='Download and extract data from congressional bills')
     parser.add_argument('--congress', default="118", help='Congress number (default: 118)')
+    parser.add_argument('--bill-type', help='Bill type (e.g., hconres, hr, s)')
     parser.add_argument('--start', type=int, help='Start number for bill range')
     parser.add_argument('--end', type=int, help='End number for bill range')
     parser.add_argument('--force', action='store_true', help='Force download even if files exist')
@@ -274,19 +284,29 @@ def main():
         print(f"\nStarting to download {len(args.urls)} bills from direct URLs...")
         results = scraper.download_bills_from_urls(args.urls, skip_existing=not args.force)
     else:
-        # If start or end not provided, get them from user input
-        start_number = args.start
-        end_number = args.end
-        
-        if start_number is None or end_number is None:
-            print("\nNo start/end numbers provided via command line. Please enter them now:")
-            start_number, end_number = get_user_input()
+        # If any required parameter is missing, get them from user input
+        if args.bill_type is None or args.start is None or args.end is None:
+            print("\nMissing parameters. Please enter them now:")
+            bill_type, start_number, end_number = get_user_input(scraper)
+        else:
+            bill_type = args.bill_type
+            start_number = args.start
+            end_number = args.end
+            
+            # Validate bill type
+            if bill_type not in scraper.bill_types:
+                print(f"Invalid bill type: {bill_type}")
+                print("Available bill types:", ", ".join(scraper.bill_types))
+                return
         
         print(f"\nStarting batch download for {args.congress}th Congress...")
+        print(f"Bill type: {bill_type}")
         print(f"Bill range: {start_number}-{end_number}")
         print(f"Force download: {args.force}")
+        
         results = scraper.batch_download_bills(
             congress=args.congress,
+            bill_type=bill_type,
             start_number=start_number,
             end_number=end_number
         )
