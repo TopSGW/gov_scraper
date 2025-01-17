@@ -71,13 +71,10 @@ class GovInfoScraper:
         Returns: (exists: bool, error_message: str)
         """
         try:
-            # Use GET instead of HEAD to properly validate PDF existence
             response = requests.get(url, stream=True)
             if response.status_code == 200:
-                # Check if it's actually a PDF by looking at the first few bytes
                 content_type = response.headers.get('content-type', '').lower()
                 if 'application/pdf' in content_type:
-                    # Read just the first few bytes to verify PDF header
                     pdf_header = response.raw.read(5)
                     if pdf_header.startswith(b'%PDF-'):
                         return True, ""
@@ -91,72 +88,6 @@ class GovInfoScraper:
                 return False, f"Unexpected status code: {response.status_code}"
         except RequestException as e:
             return False, f"Error checking URL: {str(e)}"
-
-    def extract_bill_id_from_url(self, url: str) -> str:
-        """Extract bill ID from URL"""
-        path = urlparse(url).path
-        filename = os.path.splitext(os.path.basename(path))[0]
-        return filename
-
-    def generate_bill_urls(self, congress: str, bill_type: str, start_number: int, end_number: int) -> List[str]:
-        """Generate potential bill URLs for a range of numbers"""
-        urls = []
-        for number in range(start_number, end_number + 1):
-            for version in self.bill_versions:
-                bill_id = f"BILLS-{congress}{bill_type}{number}{version}"
-                url = f"{self.base_url}/content/pkg/{bill_id}/pdf/{bill_id}.pdf"
-                # Validate URL before adding
-                exists, _ = self.validate_url(url)
-                if exists:
-                    urls.append(url)
-                    print(f"Found valid bill: {bill_id}")
-                time.sleep(0.1)  # Rate limiting for validation
-        return urls
-
-    def download_bills_from_urls(self, urls: List[str], skip_existing: bool = True) -> List[Dict]:
-        """Download bills from a list of direct URLs"""
-        all_results = self.load_progress()
-        downloaded_bills = self.get_downloaded_bills()
-        total_found = len(downloaded_bills)
-        failed_urls = []
-        
-        for i, url in enumerate(urls, 1):
-            try:
-                bill_id = self.extract_bill_id_from_url(url)
-                
-                if skip_existing and bill_id in downloaded_bills:
-                    print(f"\nSkipping already downloaded bill {i}/{len(urls)}: {bill_id}")
-                    continue
-                
-                print(f"\nProcessing bill {i}/{len(urls)}: {bill_id}")
-                
-                bill_data = {
-                    'bill_id': bill_id,
-                    'pdf_url': url,
-                    'title': f"Bill {bill_id}"
-                }
-                
-                results = self.download_bill(bill_data, skip_existing)
-                if results:
-                    all_results.append(results)
-                    total_found += 1
-                    print(f"Successfully downloaded bill (Total found: {total_found})")
-                    self.save_progress(all_results)
-                
-                time.sleep(0.5)  # Rate limiting
-                
-            except Exception as e:
-                error_message = f"Error processing URL {url}: {str(e)}"
-                print(error_message)
-                failed_urls.append((url, error_message))
-                continue
-        
-        if failed_urls:
-            print("\nFailed URLs Summary:")
-            for url, error in failed_urls:
-                print(f"- {url}: {error}")
-        
-        return all_results
 
     def download_bill_from_url(self, url, bill_id, format_type, skip_existing=True):
         """Download bill from direct URL"""
@@ -195,6 +126,35 @@ class GovInfoScraper:
             print(f"Error downloading {format_type}: {str(e)}")
             return None
 
+    def process_bill(self, congress: str, bill_type: str, number: int, version: str) -> Dict:
+        """Process a single bill"""
+        bill_id = f"BILLS-{congress}{bill_type}{number}{version}"
+        url = f"{self.base_url}/content/pkg/{bill_id}/pdf/{bill_id}.pdf"
+        
+        exists, error = self.validate_url(url)
+        if not exists:
+            return None
+            
+        print(f"Found valid bill: {bill_id}")
+        
+        bill_data = {
+            'bill_id': bill_id,
+            'pdf_url': url,
+            'title': f"Bill {bill_id}"
+        }
+        
+        results = self.download_bill({
+            'bill_id': bill_id,
+            'pdf_url': url,
+            'title': f"Bill {bill_id}"
+        })
+        
+        if results:
+            print(f"Successfully downloaded bill: {bill_id}")
+            
+        time.sleep(0.1)  # Rate limiting
+        return results
+
     def download_bill(self, bill_data, skip_existing=True):
         """Download bill in all available formats using direct URLs"""
         results = {
@@ -227,11 +187,25 @@ class GovInfoScraper:
     def batch_download_bills(self, congress: str, bill_type: str, start_number: int = 1, end_number: int = 100):
         """Download bills in batch for specific bill type"""
         print(f"\nProcessing {bill_type} bills for {congress}th Congress ({start_number}-{end_number})")
-        urls = self.generate_bill_urls(congress, bill_type, start_number, end_number)
-        print(f"Found {len(urls)} valid bills to download")
-        if urls:
-            return self.download_bills_from_urls(urls)
-        return []
+        
+        all_results = self.load_progress()
+        downloaded_bills = self.get_downloaded_bills()
+        total_found = 0
+        
+        for number in range(start_number, end_number + 1):
+            for version in self.bill_versions:
+                if total_found % 10 == 0:  # Progress update every 10 bills
+                    print(f"\nChecking bill number {number} with version {version}")
+                
+                results = self.process_bill(congress, bill_type, number, version)
+                if results and results['bill_id'] not in downloaded_bills:
+                    all_results.append(results)
+                    downloaded_bills.add(results['bill_id'])
+                    total_found += 1
+                    print(f"Total bills found and downloaded: {total_found}")
+                    self.save_progress(all_results)
+        
+        return all_results
 
 def get_user_input(scraper):
     """Get bill type, start and end numbers from user input"""
@@ -275,41 +249,36 @@ def main():
     parser.add_argument('--start', type=int, help='Start number for bill range')
     parser.add_argument('--end', type=int, help='End number for bill range')
     parser.add_argument('--force', action='store_true', help='Force download even if files exist')
-    parser.add_argument('--urls', nargs='+', help='List of direct URLs to download')
     args = parser.parse_args()
     
     scraper = GovInfoScraper()
     
-    if args.urls:
-        print(f"\nStarting to download {len(args.urls)} bills from direct URLs...")
-        results = scraper.download_bills_from_urls(args.urls, skip_existing=not args.force)
+    # If any required parameter is missing, get them from user input
+    if args.bill_type is None or args.start is None or args.end is None:
+        print("\nMissing parameters. Please enter them now:")
+        bill_type, start_number, end_number = get_user_input(scraper)
     else:
-        # If any required parameter is missing, get them from user input
-        if args.bill_type is None or args.start is None or args.end is None:
-            print("\nMissing parameters. Please enter them now:")
-            bill_type, start_number, end_number = get_user_input(scraper)
-        else:
-            bill_type = args.bill_type
-            start_number = args.start
-            end_number = args.end
-            
-            # Validate bill type
-            if bill_type not in scraper.bill_types:
-                print(f"Invalid bill type: {bill_type}")
-                print("Available bill types:", ", ".join(scraper.bill_types))
-                return
+        bill_type = args.bill_type
+        start_number = args.start
+        end_number = args.end
         
-        print(f"\nStarting batch download for {args.congress}th Congress...")
-        print(f"Bill type: {bill_type}")
-        print(f"Bill range: {start_number}-{end_number}")
-        print(f"Force download: {args.force}")
-        
-        results = scraper.batch_download_bills(
-            congress=args.congress,
-            bill_type=bill_type,
-            start_number=start_number,
-            end_number=end_number
-        )
+        # Validate bill type
+        if bill_type not in scraper.bill_types:
+            print(f"Invalid bill type: {bill_type}")
+            print("Available bill types:", ", ".join(scraper.bill_types))
+            return
+    
+    print(f"\nStarting batch download for {args.congress}th Congress...")
+    print(f"Bill type: {bill_type}")
+    print(f"Bill range: {start_number}-{end_number}")
+    print(f"Force download: {args.force}")
+    
+    results = scraper.batch_download_bills(
+        congress=args.congress,
+        bill_type=bill_type,
+        start_number=start_number,
+        end_number=end_number
+    )
     
     if results:
         print(f"\nSuccessfully downloaded {len(results)} bills")
